@@ -1,0 +1,23 @@
+/* Uzak Yönetim sayfaları */
+
+.filter-box .card-body { background: #f8f9fa; }
+
+/* Cihaz durumu */
+.durum-nokta { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.durum-nokta.cevrimici { background: var(--bs-success); }
+.durum-nokta.cevrimdisi { background: var(--bs-secondary); }
+
+/* DataTables scrollX tablosunda kolonlar sıkışmasın */
+table.dataTable td, table.dataTable th { white-space: nowrap; }
+
+/* Cihaz detay: etiket / değer tabloları */
+.detay-tablo th { width: 38%; font-weight: 600; color: var(--bs-secondary-color); }
+.detay-tablo td, .detay-tablo th { white-space: normal; }
+
+/* Script / çıktı alanları */
+.kod-alani { font-size: .8rem; tab-size: 4; white-space: pre; }
+.cikti-kutu { font-size: .8rem; white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; background: #1e1e1e; color: #d4d4d4; padding: .75rem; border-radius: .375rem; }
+.cikti-kutu.hata { color: #f48771; }
+
+/* Kurulum komutu kutusu */
+.kurulum-komut { font-size: .8rem; white-space: pre-wrap; word-break: break-all; }
