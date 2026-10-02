@@ -341,8 +341,11 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
                         </h3>
                         <?php if ($cihaz['Cihazlar_Aciklama']): ?><div class="text-muted"><?= $uyE($cihaz['Cihazlar_Aciklama']) ?></div><?php endif; ?>
                     </div>
-                    <div class="col-sm-6">
-                        <ol class="breadcrumb float-sm-end">
+                    <div class="col-sm-6 d-flex flex-column align-items-end gap-1">
+                        <a href="/admin/uzak-cihazlar" class="btn btn-secondary btn-sm">
+                            <i class="bi bi-arrow-left me-1"></i> Listeye Dön
+                        </a>
+                        <ol class="breadcrumb mb-0">
                             <?php if ($menuAdi): ?><li class="breadcrumb-item"><?= $uyE($menuAdi) ?></li><?php endif; ?>
                             <li class="breadcrumb-item"><a href="/admin/uzak-cihazlar">Cihazlar</a></li>
                             <li class="breadcrumb-item active"><?= $uyE($pageTitle) ?></li>
