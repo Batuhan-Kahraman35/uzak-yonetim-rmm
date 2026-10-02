@@ -178,6 +178,32 @@ $(function () {
         $('#hkIcerik').val($(this).data('komut'));
         $('#hkBaslik').val($(this).data('baslik'));
     });
+    // Bilgisayar adı: yeni ad yeniden başlatmada geçerli olur, nabız paneldeki adı günceller
+    $('#hkAdDegistir').on('click', function () {
+        const mevcut = String($(this).data('mevcut') || '');
+        Swal.fire({
+            title: 'Yeni bilgisayar adı',
+            // Bootstrap modalının odak tuzağı dışarıdaki input'a yazmayı engeller; Swal modalın içinde açılır
+            target: document.getElementById('hizliKomutModal'),
+            input: 'text', inputValue: mevcut,
+            inputAttributes: { maxlength: 15, autocapitalize: 'characters' },
+            html: '<div class="small text-muted">En fazla 15 karakter; harf, rakam ve tire. Yeniden başlatınca geçerli olur.</div>',
+            showCancelButton: true, confirmButtonText: 'Komutu Hazırla', cancelButtonText: 'Vazgeç',
+            inputValidator: v => {
+                v = (v || '').trim();
+                if (!/^[A-Za-z0-9-]{1,15}$/.test(v)) return 'En fazla 15 karakter; yalnız harf, rakam ve tire.';
+                if (/^\d+$/.test(v)) return 'Ad yalnız rakamdan oluşamaz.';
+                if (/^-|-$/.test(v)) return 'Ad tire ile başlayamaz / bitemez.';
+                if (v.toUpperCase() === mevcut.toUpperCase()) return 'Yeni ad mevcut adla aynı.';
+            }
+        }).then(s => {
+            if (!s.isConfirmed) return;
+            const ad = s.value.trim().toUpperCase();
+            $('#hkIcerik').val("Rename-Computer -NewName '" + ad + "' -Force -ErrorAction Stop\n"
+                + "'Bilgisayar adi " + ad + " olarak degistirildi; yeniden baslatinca gecerli olur.'");
+            $('#hkBaslik').val('Bilgisayar adı: ' + ad);
+        });
+    });
     $('#hkGonder').on('click', function () {
         const icerik = $('#hkIcerik').val().trim();
         if (!icerik) { showToast('Komut boş olamaz', 'warning'); return; }

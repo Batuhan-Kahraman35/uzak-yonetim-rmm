@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Uzak Yönetim - Cihaz Detay
  * Özet, donanım, diskler, yazılımlar (server-side) ve işlem geçmişi.
@@ -673,6 +673,7 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
                     <button type="button" class="btn btn-outline-secondary btn-sm hk-hazir" data-komut='shutdown /r /t 60 /c "Uzak Yonetim: yeniden baslatiliyor."' data-baslik="Yeniden başlat">Yeniden Başlat (60 sn)</button>
                     <button type="button" class="btn btn-outline-secondary btn-sm hk-hazir" data-komut='shutdown /s /t 60 /c "Uzak Yonetim: kapatiliyor."' data-baslik="Kapat">Kapat (60 sn)</button>
                     <button type="button" class="btn btn-outline-secondary btn-sm hk-hazir" data-komut='shutdown /a' data-baslik="Kapatmayı iptal et">Kapatmayı İptal</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="hkAdDegistir" data-mevcut="<?= $uyE($cihaz['Cihazlar_BilgisayarAdi']) ?>">Bilgisayar Adı Değiştir</button>
                 </div>
                 <label class="form-label" for="hkIcerik">Komut (PowerShell / cmd — SYSTEM olarak çalışır)</label>
                 <textarea class="form-control font-monospace kod-alani" id="hkIcerik" rows="6" spellcheck="false" placeholder='msg * "Merhaba"'></textarea>
