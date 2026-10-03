@@ -213,19 +213,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$udb->deger('SELECT 1 FROM dbo.CihazGruplari WHERE CihazGruplari_id = ? AND Durum = 1', [$grupId])) {
                     jsonCevap(['basarili' => false, 'mesaj' => 'Geçerli bir grup seçin.'], 422);
                 }
-                $aciklama = kirp($_POST['aciklama'] ?? null, 500);
-                $pilot    = ($_POST['pilot'] ?? '') === '1' ? 1 : 0;
+                $aciklama  = kirp($_POST['aciklama'] ?? null, 500);
+                $pilot     = ($_POST['pilot'] ?? '') === '1' ? 1 : 0;
+                $etiketler = aktifEtiketIdleri($udb, $_POST['etiketler'] ?? []);
+                $onceki    = array_column(cihazEtiketleri($udb, [$cihazId])[$cihazId] ?? [], 'id');
 
-                $udb->calistir(
-                    'UPDATE dbo.Cihazlar
-                     SET Cihazlar_CihazGruplari_id = ?, Cihazlar_Aciklama = ?, Cihazlar_PilotMu = ?,
-                         GuncelleyenKullanici = ?, GuncellemeTarihi = GETDATE()
-                     WHERE Cihazlar_id = ?',
-                    [$grupId, $aciklama, $pilot, $user['kullanici_id'], $cihazId]
-                );
+                $udb->islem(function (UzakDb $t) use ($grupId, $aciklama, $pilot, $etiketler, $user, $cihazId) {
+                    $t->calistir(
+                        'UPDATE dbo.Cihazlar
+                         SET Cihazlar_CihazGruplari_id = ?, Cihazlar_Aciklama = ?, Cihazlar_PilotMu = ?,
+                             GuncelleyenKullanici = ?, GuncellemeTarihi = GETDATE()
+                         WHERE Cihazlar_id = ?',
+                        [$grupId, $aciklama, $pilot, $user['kullanici_id'], $cihazId]
+                    );
+                    cihazEtiketleriniEsitle($t, $cihazId, $etiketler, (int) $user['kullanici_id']);
+                });
                 logYaz('cihaz_guncelle', [
-                    'once'  => ['grup' => $cihaz['Cihazlar_CihazGruplari_id'], 'aciklama' => $cihaz['Cihazlar_Aciklama'], 'pilot' => (int) $cihaz['Cihazlar_PilotMu']],
-                    'sonra' => ['grup' => $grupId, 'aciklama' => $aciklama, 'pilot' => $pilot],
+                    'once'  => ['grup' => $cihaz['Cihazlar_CihazGruplari_id'], 'aciklama' => $cihaz['Cihazlar_Aciklama'], 'pilot' => (int) $cihaz['Cihazlar_PilotMu'], 'etiketler' => $onceki],
+                    'sonra' => ['grup' => $grupId, 'aciklama' => $aciklama, 'pilot' => $pilot, 'etiketler' => $etiketler],
                 ], null, $cihazId);
                 jsonCevap(['basarili' => true, 'mesaj' => 'Cihaz bilgileri güncellendi.']);
 
@@ -275,6 +280,10 @@ $mimariler     = $udb->hepsi(
     [$cihazId]
 );
 $gruplar  = $udb->hepsi('SELECT CihazGruplari_id, CihazGruplari_Ad FROM dbo.CihazGruplari WHERE Durum = 1 ORDER BY CihazGruplari_Ad');
+$cihazEtiket   = cihazEtiketleri($udb, [$cihazId])[$cihazId] ?? [];
+$etiketListesi = $udb->hepsi('SELECT Etiketler_id, Etiketler_Ad, Etiketler_Renk FROM dbo.Etiketler WHERE Durum = 1 ORDER BY Etiketler_Ad');
+$etiketRozet   = fn(array $e): string => '<span class="badge etiket-rozet" style="background:' . htmlspecialchars($e['renk'])
+    . ';color:' . etiketYaziRengi($e['renk']) . '">' . htmlspecialchars($e['ad']) . '</span>';
 $scriptler = $udb->hepsi('SELECT Scriptler_id, Scriptler_Ad, Scriptler_Parametreler FROM dbo.Scriptler WHERE Durum = 1 ORDER BY Scriptler_Ad');
 $loglar   = $udb->hepsi(
     "SELECT TOP 100 l.UzakYonetimLoglari_Islem, l.UzakYonetimLoglari_Detay, l.UzakYonetimLoglari_Ip,
@@ -340,6 +349,7 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
                             <?php if ($cihaz['Cihazlar_PilotMu']): ?><span class="badge text-bg-warning fs-6 align-middle">Pilot</span><?php endif; ?>
                         </h3>
                         <?php if ($cihaz['Cihazlar_Aciklama']): ?><div class="text-muted"><?= $uyE($cihaz['Cihazlar_Aciklama']) ?></div><?php endif; ?>
+                        <?php if ($cihazEtiket): ?><div class="mt-1"><?= implode('', array_map($etiketRozet, $cihazEtiket)) ?></div><?php endif; ?>
                     </div>
                     <div class="col-sm-6 d-flex flex-column align-items-end gap-1">
                         <a href="/admin/uzak-cihazlar" class="btn btn-secondary btn-sm">
@@ -429,6 +439,7 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
                                         <tr><th>Son görülme</th><td><?= $uyDeger($cihaz['SonGorulme']) ?></td></tr>
                                         <tr><th>Son açılış</th><td><?= $uyDeger($cihaz['SonAcilis']) ?></td></tr>
                                         <tr><th>Grup</th><td><?= $uyDeger($cihaz['CihazGruplari_Ad']) ?></td></tr>
+                                        <tr><th>Etiketler</th><td><?= $cihazEtiket ? implode('', array_map($etiketRozet, $cihazEtiket)) : $uyDeger(null) ?></td></tr>
                                         <tr><th>Aktif kullanıcı</th><td><?= $uyDeger($cihaz['Cihazlar_AktifKullanici']) ?></td></tr>
                                         <tr><th>İşletim sistemi</th><td><?= $uyDeger($cihaz['Cihazlar_IsletimSistemi']) ?>
                                             <?php if ($cihaz['Cihazlar_OsSurum'] || $cihaz['Cihazlar_OsDerleme']): ?>
@@ -751,6 +762,18 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
                             <option value="<?= (int) $g['CihazGruplari_id'] ?>"<?= (int) $g['CihazGruplari_id'] === (int) $cihaz['Cihazlar_CihazGruplari_id'] ? ' selected' : '' ?>><?= $uyE($g['CihazGruplari_Ad']) ?></option>
                             <?php endforeach; ?>
                         </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="duzenleEtiketler">Etiketler</label>
+                        <?php $seciliEtiket = array_column($cihazEtiket, 'id'); ?>
+                        <select class="form-select" id="duzenleEtiketler" multiple data-placeholder="Etiket seçin">
+                            <?php foreach ($etiketListesi as $e): ?>
+                            <option value="<?= (int) $e['Etiketler_id'] ?>" data-renk="<?= $uyE($e['Etiketler_Renk']) ?>"<?= in_array((int) $e['Etiketler_id'], $seciliEtiket, true) ? ' selected' : '' ?>><?= $uyE($e['Etiketler_Ad']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <?php if (!$etiketListesi): ?>
+                        <div class="form-text">Henüz etiket yok. <a href="/admin/uzak-cihaz-gruplari">Gruplar ve Etiketler → Etiketler</a> sekmesinden ekleyin.</div>
+                        <?php endif; ?>
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="duzenleAciklama">Açıklama</label>

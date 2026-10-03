@@ -186,6 +186,38 @@ CREATE TABLE dbo.CihazYazilimlari (
 GO
 
 -- ===================================================================
+-- 4b. CİHAZ ETİKETLERİ (cihaz ↔ etiket çok-çok)
+-- ===================================================================
+IF OBJECT_ID(N'dbo.Etiketler', N'U') IS NULL
+CREATE TABLE dbo.Etiketler (
+    Etiketler_id         INT IDENTITY(1,1) PRIMARY KEY,
+    Etiketler_Ad         NVARCHAR(50)  NOT NULL,
+    Etiketler_Renk       VARCHAR(7)    NOT NULL DEFAULT '#6c757d',
+    Etiketler_Aciklama   NVARCHAR(250) NULL,
+    OlusturanKullanici   INT NULL,
+    OlusturmaTarihi      DATETIME NOT NULL DEFAULT GETDATE(),
+    GuncelleyenKullanici INT NULL,
+    GuncellemeTarihi     DATETIME NULL,
+    Durum                BIT NOT NULL DEFAULT 1,
+    CONSTRAINT UQ_Etiketler_Ad UNIQUE (Etiketler_Ad)
+);
+GO
+
+IF OBJECT_ID(N'dbo.CihazEtiketleri', N'U') IS NULL
+CREATE TABLE dbo.CihazEtiketleri (
+    CihazEtiketleri_id           INT IDENTITY(1,1) PRIMARY KEY,
+    CihazEtiketleri_Cihazlar_id  INT NOT NULL REFERENCES dbo.Cihazlar(Cihazlar_id),
+    CihazEtiketleri_Etiketler_id INT NOT NULL REFERENCES dbo.Etiketler(Etiketler_id),
+    OlusturanKullanici   INT NULL,
+    OlusturmaTarihi      DATETIME NOT NULL DEFAULT GETDATE(),
+    GuncelleyenKullanici INT NULL,
+    GuncellemeTarihi     DATETIME NULL,
+    Durum                BIT NOT NULL DEFAULT 1,
+    CONSTRAINT UQ_CihazEtiketleri UNIQUE (CihazEtiketleri_Cihazlar_id, CihazEtiketleri_Etiketler_id)
+);
+GO
+
+-- ===================================================================
 -- 5. SCRIPT KÜTÜPHANESİ VE KOMUTLAR
 -- ===================================================================
 IF OBJECT_ID(N'dbo.Scriptler', N'U') IS NULL
@@ -288,6 +320,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Cihazlar_SonGorulme')
     CREATE INDEX IX_Cihazlar_SonGorulme ON dbo.Cihazlar (Cihazlar_SonGorulme DESC) INCLUDE (Cihazlar_id);
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Cihazlar_CihazGruplari')
     CREATE INDEX IX_Cihazlar_CihazGruplari ON dbo.Cihazlar (Cihazlar_CihazGruplari_id);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_CihazEtiketleri_Etiket')
+    CREATE INDEX IX_CihazEtiketleri_Etiket ON dbo.CihazEtiketleri (CihazEtiketleri_Etiketler_id) INCLUDE (CihazEtiketleri_Cihazlar_id);
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Cihazlar_DonanimKimlik')
     CREATE UNIQUE INDEX UX_Cihazlar_DonanimKimlik ON dbo.Cihazlar (Cihazlar_DonanimKimlik) WHERE Cihazlar_DonanimKimlik IS NOT NULL;
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_CihazDiskleri_Cihaz')
@@ -370,7 +404,8 @@ GO
 -- ===================================================================
 SELECT N'Tablo' AS Tur, COUNT(*) AS Adet FROM sys.tables
 WHERE name IN (N'UzakYonetimAyarlari', N'CihazGruplari', N'Tanim_KomutDurumlari', N'KayitKodlari', N'Cihazlar', N'CihazDonanim',
-               N'CihazDiskleri', N'CihazYazilimlari', N'Scriptler', N'Komutlar', N'KomutHedefleri', N'AjanSurumleri', N'UzakYonetimLoglari')
+               N'CihazDiskleri', N'CihazYazilimlari', N'Scriptler', N'Komutlar', N'KomutHedefleri', N'AjanSurumleri', N'UzakYonetimLoglari',
+               N'Etiketler', N'CihazEtiketleri')
 UNION ALL SELECT N'Komut durumu', COUNT(*) FROM dbo.Tanim_KomutDurumlari
 UNION ALL SELECT N'Grup',         COUNT(*) FROM dbo.CihazGruplari
 UNION ALL SELECT N'Ayar',         COUNT(*) FROM dbo.UzakYonetimAyarlari;

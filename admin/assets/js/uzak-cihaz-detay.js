@@ -54,6 +54,8 @@ $(function () {
     });
 
     // Düzenle
+    if ($('#duzenleEtiketler').length) uzakEtiketSelect($('#duzenleEtiketler'), $('#duzenleModal'));
+
     $('#duzenleKaydet').on('click', function () {
         const form = $('#duzenleForm')[0];
         if (!form.reportValidity()) return;
@@ -63,7 +65,8 @@ $(function () {
             id: cihazId,
             grup: $('#duzenleGrup').val(),
             aciklama: $('#duzenleAciklama').val(),
-            pilot: $('#duzenlePilot').is(':checked') ? '1' : ''
+            pilot: $('#duzenlePilot').is(':checked') ? '1' : '',
+            etiketler: $('#duzenleEtiketler').val() || []
         }, function (c) {
             showToast(c.mesaj, c.basarili ? 'success' : 'error');
             if (c.basarili) setTimeout(() => window.location.reload(), 800);

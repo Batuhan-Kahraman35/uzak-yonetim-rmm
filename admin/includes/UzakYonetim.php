@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Uzak Yönetim ortak yardımcıları (panel sayfaları + ajan API'si)
  * Destek'in DB bağlantısını kullanır; tablolar: UzakYonetimAyarlari, UzakYonetimLoglari, Cihazlar...
@@ -460,4 +460,125 @@ function kirp($deger, int $uzunluk): ?string
     }
     $deger = trim((string) $deger);
     return $deger === '' ? null : mb_substr($deger, 0, $uzunluk);
+}
+
+/* ---------- Cihaz etiketleri (Etiketler + CihazEtiketleri) ---------- */
+
+/** POST'tan gelen ID listesini pozitif, tekil tamsayılara indirger (en fazla $azami adet). */
+function idListesi($deger, int $azami = 500): array
+{
+    $idler = array_values(array_unique(array_filter(array_map('intval', (array) $deger), fn($i) => $i > 0)));
+    return array_slice($idler, 0, $azami);
+}
+
+/** IN (...) için soru işareti listesi. */
+function yerTutucu(array $degerler): string
+{
+    return implode(',', array_fill(0, count($degerler), '?'));
+}
+
+/** Etiket rengi için okunur yazı rengi (#fff / #000). */
+function etiketYaziRengi(string $renk): string
+{
+    if (!preg_match('/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i', $renk, $m)) {
+        return '#fff';
+    }
+    $parlaklik = (hexdec($m[1]) * 299 + hexdec($m[2]) * 587 + hexdec($m[3]) * 114) / 1000;
+    return $parlaklik > 150 ? '#000' : '#fff';
+}
+
+/**
+ * Cihazların aktif etiketleri: [Cihazlar_id => [['id','ad','renk'], ...]]
+ * Server-side listede yalnız o sayfadaki cihazlar için çağrılır.
+ */
+function cihazEtiketleri(UzakDb $udb, array $cihazIdler): array
+{
+    $cihazIdler = idListesi($cihazIdler, 1000);
+    if (!$cihazIdler) {
+        return [];
+    }
+    $satirlar = $udb->hepsi(
+        'SELECT ce.CihazEtiketleri_Cihazlar_id AS CihazId, e.Etiketler_id, e.Etiketler_Ad, e.Etiketler_Renk
+         FROM dbo.CihazEtiketleri ce
+         INNER JOIN dbo.Etiketler e ON e.Etiketler_id = ce.CihazEtiketleri_Etiketler_id AND e.Durum = 1
+         WHERE ce.CihazEtiketleri_Cihazlar_id IN (' . yerTutucu($cihazIdler) . ')
+         ORDER BY e.Etiketler_Ad',
+        $cihazIdler
+    );
+    $sonuc = [];
+    foreach ($satirlar as $s) {
+        $sonuc[(int) $s['CihazId']][] = ['id' => (int) $s['Etiketler_id'], 'ad' => $s['Etiketler_Ad'], 'renk' => $s['Etiketler_Renk']];
+    }
+    return $sonuc;
+}
+
+/** Verilen ID'lerden yalnız aktif etiketleri döner. */
+function aktifEtiketIdleri(UzakDb $udb, array $etiketIdler): array
+{
+    $etiketIdler = idListesi($etiketIdler, 100);
+    if (!$etiketIdler) {
+        return [];
+    }
+    $satirlar = $udb->hepsi(
+        'SELECT Etiketler_id FROM dbo.Etiketler WHERE Durum = 1 AND Etiketler_id IN (' . yerTutucu($etiketIdler) . ')',
+        $etiketIdler
+    );
+    return array_map(fn($s) => (int) $s['Etiketler_id'], $satirlar);
+}
+
+/**
+ * Cihazlara etiket ekler (zaten olanları atlar). Eklenen satır sayısını döner.
+ * $cihazIdler ve $etiketIdler önceden doğrulanmış olmalı.
+ */
+function cihazEtiketEkle(UzakDb $udb, array $cihazIdler, array $etiketIdler, int $kullaniciId): int
+{
+    if (!$cihazIdler || !$etiketIdler) {
+        return 0;
+    }
+    return $udb->calistir(
+        'INSERT INTO dbo.CihazEtiketleri (CihazEtiketleri_Cihazlar_id, CihazEtiketleri_Etiketler_id, OlusturanKullanici)
+         SELECT c.Cihazlar_id, e.Etiketler_id, ?
+         FROM dbo.Cihazlar c
+         CROSS JOIN dbo.Etiketler e
+         WHERE c.Durum = 1 AND c.Cihazlar_id IN (' . yerTutucu($cihazIdler) . ')
+           AND e.Durum = 1 AND e.Etiketler_id IN (' . yerTutucu($etiketIdler) . ')
+           AND NOT EXISTS (SELECT 1 FROM dbo.CihazEtiketleri x
+                           WHERE x.CihazEtiketleri_Cihazlar_id = c.Cihazlar_id AND x.CihazEtiketleri_Etiketler_id = e.Etiketler_id)',
+        array_merge([$kullaniciId], $cihazIdler, $etiketIdler)
+    );
+}
+
+/** Cihazlardan etiket kaldırır. Silinen satır sayısını döner. */
+function cihazEtiketKaldir(UzakDb $udb, array $cihazIdler, array $etiketIdler): int
+{
+    if (!$cihazIdler || !$etiketIdler) {
+        return 0;
+    }
+    return $udb->calistir(
+        'DELETE FROM dbo.CihazEtiketleri
+         WHERE CihazEtiketleri_Cihazlar_id IN (' . yerTutucu($cihazIdler) . ')
+           AND CihazEtiketleri_Etiketler_id IN (' . yerTutucu($etiketIdler) . ')',
+        array_merge($cihazIdler, $etiketIdler)
+    );
+}
+
+/**
+ * Tek cihazın aktif etiketlerini verilen listeyle eşitler (pasif etiket atamalarına dokunmaz).
+ * Transaction içinde çağrılmalı.
+ */
+function cihazEtiketleriniEsitle(UzakDb $udb, int $cihazId, array $etiketIdler, int $kullaniciId): void
+{
+    $param = [$cihazId];
+    $haric = '';
+    if ($etiketIdler) {
+        $haric = ' AND CihazEtiketleri_Etiketler_id NOT IN (' . yerTutucu($etiketIdler) . ')';
+        $param = array_merge($param, $etiketIdler);
+    }
+    $udb->calistir(
+        'DELETE FROM dbo.CihazEtiketleri
+         WHERE CihazEtiketleri_Cihazlar_id = ?' . $haric . '
+           AND CihazEtiketleri_Etiketler_id IN (SELECT Etiketler_id FROM dbo.Etiketler WHERE Durum = 1)',
+        $param
+    );
+    cihazEtiketEkle($udb, [$cihazId], $etiketIdler, $kullaniciId);
 }

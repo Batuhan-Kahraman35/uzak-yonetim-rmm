@@ -1,7 +1,8 @@
-﻿<?php
+<?php
 /**
  * Uzak Yönetim - Cihazlar (server-side DataTables)
  * Hareket tablosu gibi büyüyebileceği için server-side; InfoBox sayımları ayrı action (istatistik).
+ * Etiketler sayfadaki cihazlar için ayrı sorguyla eklenir; toplu etiket ekle/kaldır (etiket_toplu).
  */
 
 require_once __DIR__ . '/../auth.php';
@@ -11,8 +12,8 @@ requireAuth();
 
 $user = Auth::user();
 $db   = Database::getInstance();
-$udb  = UzakDb::al();
-uzakSayfaYetkisi($user);
+$udb   = UzakDb::al();
+$yetki = uzakSayfaYetkisi($user);
 
 $cevrimdisiDk = max(1, (int) ayar('cihaz_cevrimdisi_dk', 5));
 
@@ -42,19 +43,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $length = (int) ($_POST['length'] ?? 25);
                 $length = ($length < 1 || $length > 500) ? 25 : $length;
 
-                // Sıralama: kolon index → kolon adı (whitelist)
+                // Sıralama: kolon index → kolon adı (whitelist); 0 = seçim, 3 = etiketler (sıralanmaz)
                 $siralanabilir = [
-                    0 => 'c.Cihazlar_BilgisayarAdi',
-                    1 => 'g.CihazGruplari_Ad',
-                    2 => 'c.Cihazlar_SonGorulme',
-                    3 => 'c.Cihazlar_IsletimSistemi',
-                    4 => 'c.Cihazlar_AktifKullanici',
-                    5 => 'c.Cihazlar_IcIp',
-                    6 => 'c.Cihazlar_DisIp',
-                    7 => 'c.Cihazlar_AjanSurum',
-                    8 => 'c.Cihazlar_SonGorulme',
+                    1  => 'c.Cihazlar_BilgisayarAdi',
+                    2  => 'g.CihazGruplari_Ad',
+                    4  => 'c.Cihazlar_SonGorulme',
+                    5  => 'c.Cihazlar_IsletimSistemi',
+                    6  => 'c.Cihazlar_AktifKullanici',
+                    7  => 'c.Cihazlar_IcIp',
+                    8  => 'c.Cihazlar_DisIp',
+                    9  => 'c.Cihazlar_AjanSurum',
+                    10 => 'c.Cihazlar_SonGorulme',
                 ];
-                $siraKolon = $siralanabilir[(int) ($_POST['order'][0]['column'] ?? 8)] ?? 'c.Cihazlar_SonGorulme';
+                $siraKolon = $siralanabilir[(int) ($_POST['order'][0]['column'] ?? 10)] ?? 'c.Cihazlar_SonGorulme';
                 $siraYon   = strtolower((string) ($_POST['order'][0]['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
 
                 // Filtreler (grup filtresi ID ile — sayımlar JOIN'siz kalır)
@@ -78,6 +79,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if (($_POST['pilot'] ?? '') === '1') {
                     $kosul[] = 'c.Cihazlar_PilotMu = 1';
+                }
+
+                // Etiket filtresi: "herhangi biri" EXISTS, "hepsi" eşleşen etiket sayısı = seçilen sayı
+                $etiketIdler = idListesi($_POST['etiketler'] ?? [], 50);
+                if ($etiketIdler) {
+                    $etiketAlt = 'FROM dbo.CihazEtiketleri ce WHERE ce.CihazEtiketleri_Cihazlar_id = c.Cihazlar_id
+                                  AND ce.CihazEtiketleri_Etiketler_id IN (' . yerTutucu($etiketIdler) . ')';
+                    if (($_POST['etiketMod'] ?? '') === 'hepsi') {
+                        $kosul[] = "(SELECT COUNT(*) $etiketAlt) = " . count($etiketIdler);
+                    } else {
+                        $kosul[] = "EXISTS (SELECT 1 $etiketAlt)";
+                    }
+                    array_push($param, ...$etiketIdler);
                 }
 
                 $ara = trim((string) ($_POST['ara'] ?? ''));
@@ -122,6 +136,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         LEFT JOIN dbo.CihazGruplari g ON g.CihazGruplari_id = c.Cihazlar_CihazGruplari_id
                         ORDER BY s.Sira
                     ", array_merge($param, [$cevrimdisiDk]));
+
+                    // Etiketler yalnız bu sayfadaki cihazlar için ayrı sorguyla eklenir
+                    $etiketler = cihazEtiketleri($udb, array_column($veri, 'Cihazlar_id'));
+                    foreach ($veri as &$satir) {
+                        $satir['Etiketler'] = $etiketler[(int) $satir['Cihazlar_id']] ?? [];
+                    }
+                    unset($satir);
                 }
 
                 // DataTables kendi formatını bekler (basarili/mesaj yerine draw/data)
@@ -130,6 +151,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'recordsTotal'    => $recordsTotal,
                     'recordsFiltered' => $recordsFiltered,
                     'data'            => $veri,
+                ]);
+
+            case 'etiket_toplu':
+                if (empty($yetki['can_edit'])) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Düzenleme yetkiniz yok.'], 403);
+                }
+                $islem      = ($_POST['islem'] ?? '') === 'kaldir' ? 'kaldir' : 'ekle';
+                $cihazIdler = idListesi($_POST['cihazlar'] ?? [], 500);
+                $etiketler  = $islem === 'ekle'
+                    ? aktifEtiketIdleri($udb, $_POST['etiketler'] ?? [])
+                    : idListesi($_POST['etiketler'] ?? [], 100);
+                if (!$cihazIdler) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'En az bir cihaz seçin.'], 422);
+                }
+                if (!$etiketler) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'En az bir etiket seçin.'], 422);
+                }
+
+                $adet = $islem === 'ekle'
+                    ? cihazEtiketEkle($udb, $cihazIdler, $etiketler, (int) $user['kullanici_id'])
+                    : cihazEtiketKaldir($udb, $cihazIdler, $etiketler);
+                logYaz('cihaz_etiket_toplu', ['islem' => $islem, 'cihazlar' => $cihazIdler, 'etiketler' => $etiketler, 'adet' => $adet]);
+                jsonCevap([
+                    'basarili' => true,
+                    'mesaj'    => $islem === 'ekle'
+                        ? "{$adet} etiket ataması eklendi (" . count($cihazIdler) . ' cihaz).'
+                        : "{$adet} etiket ataması kaldırıldı (" . count($cihazIdler) . ' cihaz).',
                 ]);
 
             default:
@@ -141,7 +189,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$gruplar = $udb->hepsi('SELECT CihazGruplari_id, CihazGruplari_Ad FROM dbo.CihazGruplari WHERE Durum = 1 ORDER BY CihazGruplari_Ad');
+$gruplar       = $udb->hepsi('SELECT CihazGruplari_id, CihazGruplari_Ad FROM dbo.CihazGruplari WHERE Durum = 1 ORDER BY CihazGruplari_Ad');
+$etiketListesi = $udb->hepsi('SELECT Etiketler_id, Etiketler_Ad, Etiketler_Renk FROM dbo.Etiketler WHERE Durum = 1 ORDER BY Etiketler_Ad');
+$etiketOption  = function (array $e): string {
+    return '<option value="' . (int) $e['Etiketler_id'] . '" data-renk="' . htmlspecialchars($e['Etiketler_Renk']) . '">'
+         . htmlspecialchars($e['Etiketler_Ad']) . '</option>';
+};
 
 $pageInfo = $db->fetchOne(
     "SELECT s.sayfalar_sayfa_adi, m.menuler_menu_adi AS menu_adi
@@ -268,6 +321,19 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
                                         <label class="form-check-label" for="filtrePilot">Yalnız pilot cihazlar</label>
                                     </div>
                                 </div>
+                                <div class="col-12 col-md-7">
+                                    <label class="form-label" for="filtreEtiket">Etiket</label>
+                                    <select class="form-select" id="filtreEtiket" multiple data-placeholder="Etiket seçin">
+                                        <?php foreach ($etiketListesi as $e) echo $etiketOption($e); ?>
+                                    </select>
+                                </div>
+                                <div class="col-12 col-md-3">
+                                    <label class="form-label" for="filtreEtiketMod">Etiket eşleşmesi</label>
+                                    <select class="form-select select2-basic" id="filtreEtiketMod">
+                                        <option value="herhangi">Herhangi biri</option>
+                                        <option value="hepsi">Hepsi</option>
+                                    </select>
+                                </div>
                             </div>
                             <div class="mt-3 text-end">
                                 <button type="button" class="btn btn-outline-secondary" id="filtreTemizle"><i class="bi bi-x-lg me-1"></i>Temizle</button>
@@ -279,12 +345,28 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
 
                 <!-- Liste -->
                 <div class="card">
+                    <?php if (!empty($yetki['can_edit'])): ?>
+                    <div class="card-header d-flex align-items-center flex-wrap gap-2">
+                        <span class="text-muted small"><strong id="seciliAdet">0</strong> cihaz seçili</span>
+                        <button type="button" class="btn btn-link btn-sm p-0 d-none" id="secimTemizle">Seçimi temizle</button>
+                        <button type="button" class="btn btn-primary btn-sm ms-auto" id="topluEtiket" disabled>
+                            <i class="bi bi-tags me-1"></i>Etiket İşlemleri
+                        </button>
+                    </div>
+                    <?php endif; ?>
                     <div class="card-body">
-                        <table id="cihazTablo" class="table table-striped table-hover align-middle w-100">
+                        <table id="cihazTablo" class="table table-striped table-hover align-middle w-100" data-duzenle="<?= !empty($yetki['can_edit']) ? 1 : 0 ?>">
                             <thead>
                                 <tr>
+                                    <th class="text-center">
+                                        <div class="form-check form-switch d-flex justify-content-center">
+                                            <input class="form-check-input" type="checkbox" role="switch" id="tumunuSec" title="Sayfadakilerin tümünü seç">
+                                            <label class="form-check-label" for="tumunuSec"></label>
+                                        </div>
+                                    </th>
                                     <th>Bilgisayar</th>
                                     <th>Grup</th>
+                                    <th>Etiketler</th>
                                     <th>Durum</th>
                                     <th>İşletim Sistemi</th>
                                     <th>Aktif Kullanıcı</th>
@@ -304,6 +386,40 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
 
     <?php include __DIR__ . '/../includes/footer.php'; ?>
 </div>
+
+<?php if (!empty($yetki['can_edit'])): ?>
+<!-- Toplu etiket -->
+<div class="modal fade" id="topluEtiketModal" tabindex="-1" aria-labelledby="topluEtiketBaslik" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="topluEtiketBaslik"><i class="bi bi-tags me-1"></i>Etiket İşlemleri</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Kapat"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-3"><strong id="topluAdet">0</strong> seçili cihaz için:</p>
+                <div class="btn-group w-100 mb-3" role="group" aria-label="İşlem">
+                    <input type="radio" class="btn-check" name="topluIslem" id="topluEkle" value="ekle" checked>
+                    <label class="btn btn-outline-success" for="topluEkle"><i class="bi bi-plus-lg me-1"></i>Etiket ekle</label>
+                    <input type="radio" class="btn-check" name="topluIslem" id="topluKaldir" value="kaldir">
+                    <label class="btn btn-outline-danger" for="topluKaldir"><i class="bi bi-dash-lg me-1"></i>Etiket kaldır</label>
+                </div>
+                <label class="form-label" for="topluEtiketler">Etiketler</label>
+                <select class="form-select" id="topluEtiketler" multiple data-placeholder="Etiket seçin">
+                    <?php foreach ($etiketListesi as $e) echo $etiketOption($e); ?>
+                </select>
+                <?php if (!$etiketListesi): ?>
+                <div class="form-text">Henüz etiket yok. <a href="/admin/uzak-cihaz-gruplari">Gruplar ve Etiketler → Etiketler</a> sekmesinden ekleyin.</div>
+                <?php endif; ?>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Vazgeç</button>
+                <button type="button" class="btn btn-primary" id="topluUygula"><i class="bi bi-check-lg me-1"></i>Uygula</button>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
 <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
