@@ -21,21 +21,7 @@ if ($kod === '' || $bilgisayarAdi === null) {
 }
 
 // --- Donanım kimliği ---------------------------------------------------------
-// Anlamsız / fabrika varsayılanı değerler kimlik sayılmaz (Ayarlar: donanim_kimlik_gecersiz, | ile ayrılmış)
-$gecersiz = array_map(
-    fn($d) => strtoupper(trim($d)),
-    explode('|', (string) ayar('donanim_kimlik_gecersiz',
-        'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF|00000000-0000-0000-0000-000000000000|03000200-0400-0500-0006-000700080009'
-        . '|TO BE FILLED BY O.E.M.|DEFAULT STRING|SYSTEM SERIAL NUMBER|NONE|0|123456789|NOT APPLICABLE'))
-);
-$uuid = strtoupper(trim((string) ($girdi['anakartUuid'] ?? '')));
-$seri = strtoupper(trim((string) ($girdi['biosSeri'] ?? '')));
-if (in_array($seri, $gecersiz, true)) {
-    $seri = '';
-}
-$donanimKimlik = ($uuid !== '' && !in_array($uuid, $gecersiz, true))
-    ? hash('sha256', $uuid . '|' . $seri)
-    : null;
+$donanimKimlik = donanimKimlikHesapla($girdi['anakartUuid'] ?? '', $girdi['biosSeri'] ?? '');
 
 // --- Kayıt -------------------------------------------------------------------
 $token = bin2hex(random_bytes(32));

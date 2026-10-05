@@ -218,6 +218,34 @@ CREATE TABLE dbo.CihazEtiketleri (
 GO
 
 -- ===================================================================
+-- 4c. DIŞ UYGULAMA API İSTEMCİLERİ (api/uzak-yonetim.php; anahtar yalnız SHA256)
+-- ===================================================================
+IF OBJECT_ID(N'dbo.UzakApiIstemcileri', N'U') IS NULL
+CREATE TABLE dbo.UzakApiIstemcileri (
+    UzakApiIstemcileri_id          INT IDENTITY(1,1) PRIMARY KEY,
+    UzakApiIstemcileri_Ad          NVARCHAR(100) NOT NULL,
+    UzakApiIstemcileri_AnahtarHash CHAR(64)      NOT NULL,
+    UzakApiIstemcileri_Yetkiler    NVARCHAR(200) NOT NULL,   -- virgüllü: cihaz_oku,cihaz_aciklama
+    UzakApiIstemcileri_IzinliIpler NVARCHAR(500) NULL,       -- virgüllü; NULL = kısıtsız
+    UzakApiIstemcileri_SonKullanim DATETIME      NULL,
+    UzakApiIstemcileri_SonIp       VARCHAR(50)   NULL,
+    OlusturanKullanici   INT NULL,
+    OlusturmaTarihi      DATETIME NOT NULL DEFAULT GETDATE(),
+    GuncelleyenKullanici INT NULL,
+    GuncellemeTarihi     DATETIME NULL,
+    Durum                BIT NOT NULL DEFAULT 1
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_UzakApiIstemcileri_AnahtarHash')
+    CREATE UNIQUE INDEX UX_UzakApiIstemcileri_AnahtarHash ON dbo.UzakApiIstemcileri (UzakApiIstemcileri_AnahtarHash);
+GO
+-- İstemci eklemek (anahtar bir kez gösterilir, tabloya yalnız özeti yazılır):
+-- DECLARE @anahtar VARCHAR(64) = LOWER(CONVERT(VARCHAR(64), CRYPT_GEN_RANDOM(32), 2));
+-- INSERT INTO dbo.UzakApiIstemcileri (UzakApiIstemcileri_Ad, UzakApiIstemcileri_AnahtarHash, UzakApiIstemcileri_Yetkiler, UzakApiIstemcileri_IzinliIpler)
+-- VALUES (N'Örnek istemci', LOWER(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', @anahtar), 2)), N'cihaz_oku,cihaz_aciklama', N'127.0.0.1');
+-- SELECT @anahtar AS ApiAnahtari_BirKezGoster;
+
+-- ===================================================================
 -- 5. SCRIPT KÜTÜPHANESİ VE KOMUTLAR
 -- ===================================================================
 IF OBJECT_ID(N'dbo.Scriptler', N'U') IS NULL
@@ -405,7 +433,7 @@ GO
 SELECT N'Tablo' AS Tur, COUNT(*) AS Adet FROM sys.tables
 WHERE name IN (N'UzakYonetimAyarlari', N'CihazGruplari', N'Tanim_KomutDurumlari', N'KayitKodlari', N'Cihazlar', N'CihazDonanim',
                N'CihazDiskleri', N'CihazYazilimlari', N'Scriptler', N'Komutlar', N'KomutHedefleri', N'AjanSurumleri', N'UzakYonetimLoglari',
-               N'Etiketler', N'CihazEtiketleri')
+               N'Etiketler', N'CihazEtiketleri', N'UzakApiIstemcileri')
 UNION ALL SELECT N'Komut durumu', COUNT(*) FROM dbo.Tanim_KomutDurumlari
 UNION ALL SELECT N'Grup',         COUNT(*) FROM dbo.CihazGruplari
 UNION ALL SELECT N'Ayar',         COUNT(*) FROM dbo.UzakYonetimAyarlari;

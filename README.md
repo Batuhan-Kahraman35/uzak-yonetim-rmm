@@ -59,6 +59,18 @@ Kimlik: `X-Ajan-Guid` + `X-Ajan-Token` (SHA256). POST JSON, UTF-8.
 | `depo.php` | Dosya paketi (SHA256'lı) |
 | `kur.php` / `dosya.php` | Ajan betiklerini sunar (`X-Sha256`) |
 
+## Dış uygulama API'si
+
+`api/uzak-yonetim.php`: kendi uygulamalarınızın (ör. personel takip masaüstü uygulamasının arka ucu) cihazları okuyup güncellemesi için **sunucudan sunucuya** uç nokta. Anahtar istemci uygulamaya gömülmez; arka uçta durur.
+
+- Kimlik: `X-API-KEY` (DB'de yalnız SHA256), istemci bazında **yetki kapsamı** ve **izinli IP** listesi, hatalı anahtarda IP kilidi.
+- Cihaz, ajanla aynı kuralla üretilen **donanım kimliğiyle** (anakart UUID + BIOS seri → SHA256) bulunur; istemci yalnız kendi bilgisayarının kaydına erişir.
+
+| İşlem | Yetki | İşlev |
+|---|---|---|
+| `cihaz_getir` | `cihaz_oku` | Bilgisayar adı, açıklama, grup, AnyDesk/RustDesk ID, son görülme, çevrimiçi |
+| `aciklama_guncelle` | `cihaz_aciklama` | Açıklamayı yazar (aynıysa yazmaz); önce/sonra denetim loguna |
+
 ## Güvenlik modeli
 
 - **Panel ele geçerse tüm filo risk altındadır** — bu yüzden: panelde 2FA (TOTP) **önerilir**, ajan uç noktalarında IP bazlı hata kilidi, tüm işlemler denetim loguna.
@@ -78,10 +90,11 @@ Kimlik: `X-Ajan-Guid` + `X-Ajan-Token` (SHA256). POST JSON, UTF-8.
 ```
 ajan/                 PowerShell ajanı (kur, baslatici, ajan)
 api/ajan/             Ajan API uç noktaları (PHP)
+api/uzak-yonetim.php  Dış uygulama API'si (X-API-KEY)
 admin/pages/          Panel sayfaları (cihazlar, detay, scriptler, dosya deposu, ayarlar...)
 admin/includes/       UzakYonetim.php (DB + komut kuyruğu), Sifreleme.php (sodium)
 admin/assets/         Sayfa JS/CSS
-veritabani/sema.sql   MSSQL şeması (15 tablo)
+veritabani/sema.sql   MSSQL şeması (16 tablo)
 ```
 
 ## Notlar

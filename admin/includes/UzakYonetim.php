@@ -462,6 +462,28 @@ function kirp($deger, int $uzunluk): ?string
     return $deger === '' ? null : mb_substr($deger, 0, $uzunluk);
 }
 
+/**
+ * Anakart UUID + BIOS seriden cihaz donanım kimliği (SHA256). Ajan kaydı ve dış API aynı kuralı kullanır.
+ * Anlamsız / fabrika varsayılanı değerler kimlik sayılmaz (Ayarlar: donanim_kimlik_gecersiz, | ile ayrılmış).
+ */
+function donanimKimlikHesapla($uuid, $seri): ?string
+{
+    $gecersiz = array_map(
+        fn($d) => strtoupper(trim($d)),
+        explode('|', (string) ayar('donanim_kimlik_gecersiz',
+            'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF|00000000-0000-0000-0000-000000000000|03000200-0400-0500-0006-000700080009'
+            . '|TO BE FILLED BY O.E.M.|DEFAULT STRING|SYSTEM SERIAL NUMBER|NONE|0|123456789|NOT APPLICABLE'))
+    );
+    $uuid = strtoupper(trim(is_scalar($uuid) ? (string) $uuid : ''));
+    $seri = strtoupper(trim(is_scalar($seri) ? (string) $seri : ''));
+    if (in_array($seri, $gecersiz, true)) {
+        $seri = '';
+    }
+    return ($uuid !== '' && !in_array($uuid, $gecersiz, true))
+        ? hash('sha256', $uuid . '|' . $seri)
+        : null;
+}
+
 /* ---------- Cihaz etiketleri (Etiketler + CihazEtiketleri) ---------- */
 
 /** POST'tan gelen ID listesini pozitif, tekil tamsayılara indirger (en fazla $azami adet). */
