@@ -68,8 +68,15 @@ $(function () {
     $('#yukleKaydet').on('click', function () {
         const form = $('#yukleForm')[0];
         if (!form.reportValidity()) return;
+        const dosyaVar  = $('#yukleDosyalar')[0].files.length > 0;
+        const sunucuYol = $('#yukleSunucuYolu').val().trim();
+        if (!dosyaVar && !sunucuYol) {
+            showToast('Dosya seçin ya da sunucu dosya yolu girin.', 'error');
+            return;
+        }
         const fd = new FormData(form);
-        fd.append('action', 'yukle');
+        // Sunucu yolu girildiyse onu kullan (dosya seçimi yoksa); ikisi birden girildiyse dosya önceliklidir
+        fd.append('action', dosyaVar ? 'yukle' : 'yukle-sunucu');
         const $btn = $(this).prop('disabled', true);
         $('#yukleBar').removeClass('d-none');
         $.ajax({

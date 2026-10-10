@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Uzak Yönetim - Scriptler
  * PowerShell script kütüphanesi: ekle / düzenle / sil, ilk kurulum sırası, cihaz veya gruba gönderme.
@@ -16,6 +16,29 @@ $udb   = UzakDb::al();
 $yetki = uzakSayfaYetkisi($user);
 
 const SCRIPT_AZAMI_BAYT = 200 * 1024;
+
+// Ekran görüntüsünü sunar (<img> ile çekilir; GET). Dosyalar ajan/ekran/ altında, web'den 403.
+// hedefId'den cihaz çözülür; dosya adı _h<hedefId> ile doğrulanır (başka cihazın/komutun dosyası sunulmaz).
+if (($_GET['action'] ?? '') === 'ekran_goster') {
+    $hedefId = (int) ($_GET['hedefId'] ?? 0);
+    $dosya   = basename((string) ($_GET['dosya'] ?? ''));
+    if ($hedefId < 1 || !preg_match('/^\d{8}-\d{6}(-\d+)?_h' . $hedefId . '\.jpg$/', $dosya)) {
+        http_response_code(400);
+        exit;
+    }
+    $cihazId = (int) $udb->deger('SELECT KomutHedefleri_Cihazlar_id FROM dbo.KomutHedefleri WHERE KomutHedefleri_id = ?', [$hedefId]);
+    $yol     = __DIR__ . '/../../ajan/ekran/' . $cihazId . '/' . $dosya;
+    if ($cihazId < 1 || !is_file($yol)) {
+        http_response_code(404);
+        exit;
+    }
+    header('Content-Type: image/jpeg');
+    header('Content-Length: ' . filesize($yol));
+    header('Cache-Control: private, max-age=3600');
+    header('X-Content-Type-Options: nosniff');
+    readfile($yol);
+    exit;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfDogrula();
@@ -148,6 +171,141 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 logYaz('script_sil', ['id' => $id]);
                 jsonCevap(['basarili' => true, 'mesaj' => 'Script silindi.']);
 
+            case 'sonuclar':
+                // Bir script'in tüm cihazlardaki gönderimleri → server-side (geçmiş sınırsız büyür)
+                $scriptId = (int) ($_POST['scriptId'] ?? 0);
+                if ($scriptId < 1) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Script seçilmedi.'], 400);
+                }
+                $draw    = (int) ($_POST['draw'] ?? 1);
+                $start   = max(0, (int) ($_POST['start'] ?? 0));
+                $length  = (int) ($_POST['length'] ?? 25);
+                $length  = ($length < 1 || $length > 500) ? 25 : $length;
+                $siraYon = strtolower((string) ($_POST['order'][0]['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
+
+                // Sıralama kolonu: index → kolon + (gerekliyse) CTE join (istemci değeri doğrudan sorguya girmez)
+                // cte: CTE içindeki sıralama kolonu (gerekiyorsa kendi join'iyle); dis: dış SELECT'teki karşılığı
+                $siralanabilir = [
+                    0 => ['cte' => 'c.Cihazlar_BilgisayarAdi',     'dis' => 'c.Cihazlar_BilgisayarAdi',     'join' => 'INNER JOIN dbo.Cihazlar c ON c.Cihazlar_id = h.KomutHedefleri_Cihazlar_id'],
+                    1 => ['cte' => 'sd.Tanim_KomutDurumlari_Ad',   'dis' => 'd.Tanim_KomutDurumlari_Ad',    'join' => 'INNER JOIN dbo.Tanim_KomutDurumlari sd ON sd.Tanim_KomutDurumlari_id = h.KomutHedefleri_Tanim_KomutDurumlari_id'],
+                    2 => ['cte' => 'h.KomutHedefleri_CikisKodu',   'dis' => 'h.KomutHedefleri_CikisKodu',   'join' => ''],
+                    3 => ['cte' => 'su.kullanici_ad',              'dis' => 'u.kullanici_ad',               'join' => 'LEFT JOIN dbo.kullanicilar su ON su.kullanici_id = k.OlusturanKullanici'],
+                    4 => ['cte' => 'h.OlusturmaTarihi',            'dis' => 'h.OlusturmaTarihi',            'join' => ''],
+                    5 => ['cte' => 'h.KomutHedefleri_BitisTarihi', 'dis' => 'h.KomutHedefleri_BitisTarihi', 'join' => ''],
+                ];
+                $siraIdx     = (int) ($_POST['order'][0]['column'] ?? 4);
+                $sec         = $siralanabilir[$siraIdx] ?? $siralanabilir[4];
+                $cteSira     = $sec['cte'];
+                $disSira     = $sec['dis'];
+                $cteSiraJoin = $sec['join'];
+
+                // Durum filtresi (Tanim_KomutDurumlari_Kod); boşsa tümü
+                $durumKod = trim((string) ($_POST['durum'] ?? ''));
+                $filtreJoin = '';
+                $filtreKosul = '';
+                $filtreParam = [$scriptId];
+                if ($durumKod !== '') {
+                    $filtreJoin  = 'INNER JOIN dbo.Tanim_KomutDurumlari fd ON fd.Tanim_KomutDurumlari_id = h.KomutHedefleri_Tanim_KomutDurumlari_id';
+                    $filtreKosul = 'AND fd.Tanim_KomutDurumlari_Kod = ?';
+                    $filtreParam[] = $durumKod;
+                }
+
+                // Tarih-saat aralığı filtreleri (datetime-local: YYYY-MM-DDTHH:MM); geçersizse yok sayılır
+                $tarihDogrula = static function ($v): ?string {
+                    $v = trim((string) $v);
+                    if ($v === '' || !preg_match('/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/', $v)) {
+                        return null;
+                    }
+                    return str_replace('T', ' ', $v);
+                };
+                foreach ([
+                    ['gonderimBas', 'h.OlusturmaTarihi >= ?'],
+                    ['gonderimBit', 'h.OlusturmaTarihi <= ?'],
+                    ['bitisBas',    'h.KomutHedefleri_BitisTarihi >= ?'],
+                    ['bitisBit',    'h.KomutHedefleri_BitisTarihi <= ?'],
+                ] as [$alan, $sql]) {
+                    $t = $tarihDogrula($_POST[$alan] ?? '');
+                    if ($t !== null) {
+                        $filtreKosul  .= ' AND ' . $sql;
+                        $filtreParam[] = $t;
+                    }
+                }
+
+                $recordsTotal = (int) $udb->deger(
+                    'SELECT COUNT(*) FROM dbo.KomutHedefleri h
+                     INNER JOIN dbo.Komutlar k ON k.Komutlar_id = h.KomutHedefleri_Komutlar_id
+                     WHERE k.Komutlar_Scriptler_id = ?',
+                    [$scriptId]
+                );
+                $recordsFiltered = $filtreKosul === '' ? $recordsTotal : (int) $udb->deger(
+                    "SELECT COUNT(*) FROM dbo.KomutHedefleri h
+                     INNER JOIN dbo.Komutlar k ON k.Komutlar_id = h.KomutHedefleri_Komutlar_id
+                     $filtreJoin
+                     WHERE k.Komutlar_Scriptler_id = ? $filtreKosul",
+                    $filtreParam
+                );
+
+                $veri = $recordsFiltered === 0 ? [] : $udb->hepsi(
+                    "WITH Sayfa AS (
+                         SELECT h.KomutHedefleri_id
+                         FROM dbo.KomutHedefleri h
+                         INNER JOIN dbo.Komutlar k ON k.Komutlar_id = h.KomutHedefleri_Komutlar_id
+                         $filtreJoin
+                         $cteSiraJoin
+                         WHERE k.Komutlar_Scriptler_id = ? $filtreKosul
+                         ORDER BY $cteSira $siraYon, h.KomutHedefleri_id DESC
+                         OFFSET $start ROWS FETCH NEXT $length ROWS ONLY
+                     )
+                     SELECT h.KomutHedefleri_id, h.KomutHedefleri_Cihazlar_id AS CihazId, c.Cihazlar_BilgisayarAdi, h.KomutHedefleri_CikisKodu,
+                            d.Tanim_KomutDurumlari_Ad AS DurumAd, d.Tanim_KomutDurumlari_Renk AS DurumRenk,
+                            d.Tanim_KomutDurumlari_BittiMi AS BittiMi,
+                            CONVERT(VARCHAR(19), h.OlusturmaTarihi, 120) AS Olusturma,
+                            CONVERT(VARCHAR(19), h.KomutHedefleri_BitisTarihi, 120) AS Bitis,
+                            CASE WHEN h.KomutHedefleri_Cikti IS NULL AND h.KomutHedefleri_Hata IS NULL THEN 0 ELSE 1 END AS CiktiVar,
+                            u.kullanici_ad + ' ' + u.kullanici_soyad AS Gonderen
+                     FROM Sayfa s
+                     INNER JOIN dbo.KomutHedefleri h ON h.KomutHedefleri_id = s.KomutHedefleri_id
+                     INNER JOIN dbo.Komutlar k ON k.Komutlar_id = h.KomutHedefleri_Komutlar_id
+                     INNER JOIN dbo.Cihazlar c ON c.Cihazlar_id = h.KomutHedefleri_Cihazlar_id
+                     INNER JOIN dbo.Tanim_KomutDurumlari d ON d.Tanim_KomutDurumlari_id = h.KomutHedefleri_Tanim_KomutDurumlari_id
+                     LEFT JOIN dbo.kullanicilar u ON u.kullanici_id = k.OlusturanKullanici
+                     ORDER BY $disSira $siraYon, h.KomutHedefleri_id DESC",
+                    $filtreParam
+                );
+                jsonCevap(['draw' => $draw, 'recordsTotal' => $recordsTotal, 'recordsFiltered' => $recordsFiltered, 'data' => $veri]);
+
+            case 'sonuc_cikti':
+                // Tek hedefin çıktı/hata + ekran görüntüleri (script sonuç listesinden açılır; cihaz kısıtı yok)
+                $hedefId = (int) ($_POST['hedefId'] ?? 0);
+                $k = $udb->tek(
+                    "SELECT c.Cihazlar_BilgisayarAdi, k.Komutlar_Baslik, k.Komutlar_Icerik,
+                            h.KomutHedefleri_Cikti, h.KomutHedefleri_Hata, h.KomutHedefleri_CikisKodu,
+                            h.KomutHedefleri_Cihazlar_id AS CihazId, d.Tanim_KomutDurumlari_Ad AS DurumAd,
+                            CONVERT(VARCHAR(19), h.KomutHedefleri_AlinmaTarihi, 120) AS Alinma,
+                            CONVERT(VARCHAR(19), h.KomutHedefleri_BaslamaTarihi, 120) AS Baslama,
+                            CONVERT(VARCHAR(19), h.KomutHedefleri_BitisTarihi, 120) AS Bitis
+                     FROM dbo.KomutHedefleri h
+                     INNER JOIN dbo.Komutlar k ON k.Komutlar_id = h.KomutHedefleri_Komutlar_id
+                     INNER JOIN dbo.Cihazlar c ON c.Cihazlar_id = h.KomutHedefleri_Cihazlar_id
+                     INNER JOIN dbo.Tanim_KomutDurumlari d ON d.Tanim_KomutDurumlari_id = h.KomutHedefleri_Tanim_KomutDurumlari_id
+                     WHERE h.KomutHedefleri_id = ?",
+                    [$hedefId]
+                );
+                if (!$k) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Komut bulunamadı.'], 404);
+                }
+                $cihazId     = (int) $k['CihazId'];
+                $ekranKlasor = __DIR__ . '/../../ajan/ekran/' . $cihazId . '/';
+                $ekranlar    = [];
+                foreach (array_merge(
+                    glob($ekranKlasor . '*_h' . $hedefId . '.jpg') ?: [],
+                    glob($ekranKlasor . '*_h' . $hedefId . '-*.jpg') ?: []
+                ) as $p) {
+                    $ekranlar[] = basename($p);
+                }
+                sort($ekranlar);
+                jsonCevap(['basarili' => true, 'veri' => $k, 'ekranlar' => $ekranlar]);
+
             case 'gonder':
                 if (empty($yetki['can_add'])) {
                     jsonCevap(['basarili' => false, 'mesaj' => 'Komut gönderme yetkiniz yok.'], 403);
@@ -192,6 +350,7 @@ $gruplar  = $udb->hepsi(
      WHERE g.Durum = 1 GROUP BY g.CihazGruplari_id, g.CihazGruplari_Ad ORDER BY g.CihazGruplari_Ad'
 );
 $ayarlar  = $udb->hepsi('SELECT UzakYonetimAyarlari_Anahtar FROM dbo.UzakYonetimAyarlari WHERE Durum = 1 ORDER BY 1');
+$durumlar = $udb->hepsi('SELECT Tanim_KomutDurumlari_Kod, Tanim_KomutDurumlari_Ad FROM dbo.Tanim_KomutDurumlari ORDER BY Tanim_KomutDurumlari_id');
 
 $pageInfo = $db->fetchOne(
     "SELECT s.sayfalar_sayfa_adi, m.menuler_menu_adi AS menu_adi
@@ -442,6 +601,94 @@ $uyE = fn($m) => htmlspecialchars((string) ($m ?? ''), ENT_QUOTES, 'UTF-8');
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Vazgeç</button>
                 <button type="button" class="btn btn-warning" id="gonderOnay"><i class="bi bi-send me-1"></i>Gönder</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Sonuçlar (script'in tüm gönderimleri) -->
+<div class="modal fade" id="sonucModal" tabindex="-1" aria-labelledby="sonucModalBaslik" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="sonucModalBaslik"><i class="bi bi-clock-history me-1"></i>Sonuçlar: <span></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Kapat"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-3 align-items-end">
+                    <div class="col-12 col-md-3">
+                        <label class="form-label mb-1" for="sonucDurum">Durum</label>
+                        <select class="form-select form-select-sm select2-modal" id="sonucDurum" data-placeholder="Tümü">
+                            <option value="">Tümü</option>
+                            <?php foreach ($durumlar as $d): ?>
+                            <option value="<?= $uyE($d['Tanim_KomutDurumlari_Kod']) ?>"><?= $uyE($d['Tanim_KomutDurumlari_Ad']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="form-label mb-1 small" for="sonucGonderimBas">Gönderim (baş.)</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="sonucGonderimBas">
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="form-label mb-1 small" for="sonucGonderimBit">Gönderim (bit.)</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="sonucGonderimBit">
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="form-label mb-1 small" for="sonucBitisBas">Bitiş (baş.)</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="sonucBitisBas">
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="form-label mb-1 small" for="sonucBitisBit">Bitiş (bit.)</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="sonucBitisBit">
+                    </div>
+                    <div class="col-12 col-md-1">
+                        <button type="button" class="btn btn-outline-secondary btn-sm w-100" id="sonucFiltreTemizle" title="Filtreleri temizle"><i class="bi bi-x-lg"></i></button>
+                    </div>
+                </div>
+                <table id="sonucTablo" class="table table-striped table-hover align-middle w-100">
+                    <thead>
+                        <tr>
+                            <th>Cihaz</th>
+                            <th>Durum</th>
+                            <th>Çıkış</th>
+                            <th>Gönderen</th>
+                            <th>Gönderim</th>
+                            <th>Bitiş</th>
+                            <th class="text-end">İşlem</th>
+                        </tr>
+                    </thead>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Çıktı / ekran görüntüsü -->
+<div class="modal fade" id="sonucCiktiModal" tabindex="-1" aria-labelledby="sonucCiktiBaslik" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="sonucCiktiBaslik"><i class="bi bi-terminal me-1"></i><span></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Kapat"></button>
+            </div>
+            <div class="modal-body">
+                <div class="small text-muted mb-2" id="sonucCiktiZaman"></div>
+                <div id="sonucEkranAlan" class="mb-3 d-none">
+                    <h6 class="mb-1">Ekran Görüntüsü</h6>
+                    <div id="sonucEkranlar" class="d-flex flex-wrap gap-2"></div>
+                </div>
+                <div class="d-flex align-items-center mb-1">
+                    <h6 class="mb-0">Çıktı</h6>
+                    <button type="button" class="btn btn-outline-secondary btn-sm ms-auto sonuc-kopya" data-hedef="#sonucCiktiMetin" title="Çıktıyı kopyala"><i class="bi bi-clipboard"></i></button>
+                </div>
+                <pre class="cikti-kutu mb-3" id="sonucCiktiMetin"></pre>
+                <div id="sonucCiktiHataAlan">
+                    <div class="d-flex align-items-center mb-1">
+                        <h6 class="mb-0">Hata</h6>
+                        <button type="button" class="btn btn-outline-secondary btn-sm ms-auto sonuc-kopya" data-hedef="#sonucCiktiHata" title="Hatayı kopyala"><i class="bi bi-clipboard"></i></button>
+                    </div>
+                    <pre class="cikti-kutu hata mb-0" id="sonucCiktiHata"></pre>
+                </div>
             </div>
         </div>
     </div>

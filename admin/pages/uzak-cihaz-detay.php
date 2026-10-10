@@ -37,6 +37,35 @@ $cihaz = $cihazId > 0 ? $udb->tek(
 $ajanKomutAlir = $cihaz && preg_match('/^\d+(\.\d+)*$/', (string) $cihaz['Cihazlar_AjanSurum'])
     && version_compare((string) $cihaz['Cihazlar_AjanSurum'], '0.2.0', '>=');
 
+// Ekran görüntüsünü sunar (<img> ile çekilir; GET, okuma işlemi). Dosyalar ajan/ekran/ altında, web'den 403.
+if (($_GET['action'] ?? '') === 'ekran_goster') {
+    if (!$cihaz) {
+        http_response_code(404);
+        exit;
+    }
+    $hedefId = (int) ($_GET['hedefId'] ?? 0);
+    $dosya   = basename((string) ($_GET['dosya'] ?? ''));
+    if ($hedefId < 1 || !preg_match('/^\d{8}-\d{6}(-\d+)?_h' . $hedefId . '\.jpg$/', $dosya)) {
+        http_response_code(400);
+        exit;
+    }
+    $sahip = (int) $udb->deger(
+        'SELECT COUNT(*) FROM dbo.KomutHedefleri WHERE KomutHedefleri_id = ? AND KomutHedefleri_Cihazlar_id = ?',
+        [$hedefId, $cihazId]
+    );
+    $yol = __DIR__ . '/../../ajan/ekran/' . $cihazId . '/' . $dosya;
+    if ($sahip === 0 || !is_file($yol)) {
+        http_response_code(404);
+        exit;
+    }
+    header('Content-Type: image/jpeg');
+    header('Content-Length: ' . filesize($yol));
+    header('Cache-Control: private, max-age=3600');
+    header('X-Content-Type-Options: nosniff');
+    readfile($yol);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfDogrula();
     if (!$cihaz) {
@@ -147,7 +176,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$k) {
                     jsonCevap(['basarili' => false, 'mesaj' => 'Komut bulunamadı.'], 404);
                 }
-                jsonCevap(['basarili' => true, 'veri' => $k]);
+                // Bu komuta ait ekran görüntüleri (dosya adında _h<hedefId>; <img>'ler ekran_goster ile çekilir)
+                $hedefId     = (int) ($_POST['hedefId'] ?? 0);
+                $ekranKlasor = __DIR__ . '/../../ajan/ekran/' . $cihazId . '/';
+                $ekranlar    = [];
+                foreach (array_merge(
+                    glob($ekranKlasor . '*_h' . $hedefId . '.jpg') ?: [],
+                    glob($ekranKlasor . '*_h' . $hedefId . '-*.jpg') ?: []
+                ) as $p) {
+                    $ekranlar[] = basename($p);
+                }
+                sort($ekranlar);
+                jsonCevap(['basarili' => true, 'veri' => $k, 'ekranlar' => $ekranlar]);
 
             case 'komut_iptal':
                 if (empty($yetki['can_edit'])) {
@@ -648,6 +688,10 @@ $siteTitle    = $siteAyarlari['site_ayarlari_site_title'] ?? 'Örnek Yazılım P
             </div>
             <div class="modal-body">
                 <div class="small text-muted mb-2" id="ciktiZaman"></div>
+                <div id="ciktiEkranAlan" class="mb-3 d-none">
+                    <h6 class="mb-1">Ekran Görüntüsü</h6>
+                    <div id="ciktiEkranlar" class="d-flex flex-wrap gap-2"></div>
+                </div>
                 <div class="d-flex align-items-center mb-1">
                     <h6 class="mb-0">Çıktı</h6>
                     <button type="button" class="btn btn-outline-secondary btn-sm ms-auto cikti-kopya" data-hedef="#ciktiMetin" title="Çıktıyı kopyala"><i class="bi bi-clipboard"></i></button>

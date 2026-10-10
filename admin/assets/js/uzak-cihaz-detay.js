@@ -148,7 +148,8 @@ $(function () {
     });
 
     $kTablo.on('click', '.komut-cikti', function () {
-        $.post(adres, { action: 'komut_cikti', id: cihazId, hedefId: $(this).data('id') }, function (c) {
+        const hedefId = $(this).data('id');
+        $.post(adres, { action: 'komut_cikti', id: cihazId, hedefId: hedefId }, function (c) {
             if (!c.basarili) { showToast(c.mesaj, 'error'); return; }
             const v = c.veri;
             $('#ciktiModalBaslik span').text(v.Komutlar_Baslik + ' — ' + v.DurumAd + (v.KomutHedefleri_CikisKodu !== null ? ' (çıkış ' + v.KomutHedefleri_CikisKodu + ')' : ''));
@@ -157,6 +158,24 @@ $(function () {
             $('#ciktiHata').text(v.KomutHedefleri_Hata || '');
             $('#ciktiHataAlan').toggle(!!v.KomutHedefleri_Hata);
             $('#ciktiScript').text(v.Komutlar_Icerik || '');
+
+            // Ekran görüntüleri (varsa): küçük önizleme, tıklayınca tam boy yeni sekmede
+            const $ekran = $('#ciktiEkranlar').empty();
+            const ekranlar = c.ekranlar || [];
+            ekranlar.forEach(function (dosya) {
+                const url = adres + '?action=ekran_goster&id=' + cihazId
+                    + '&hedefId=' + encodeURIComponent(hedefId)
+                    + '&dosya=' + encodeURIComponent(dosya);
+                $('<a>', { href: url, target: '_blank', rel: 'noopener', title: dosya })
+                    .append($('<img>', {
+                        src: url,
+                        class: 'img-thumbnail',
+                        css: { maxHeight: '140px', cursor: 'zoom-in' }
+                    }))
+                    .appendTo($ekran);
+            });
+            $('#ciktiEkranAlan').toggleClass('d-none', ekranlar.length === 0);
+
             bootstrap.Modal.getOrCreateInstance($('#ciktiModal')[0]).show();
         });
     });

@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Uzak Yönetim - Dosya Deposu
  * Script'lerin indirdiği paketler (BGInfo exe/bgi/xml, logo vb.). Dosya diskte ajan/dosyalar/<sha256>,
@@ -155,6 +155,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $mesaj .= ' Atlanan: ' . implode(' ', $hatalar);
                 }
                 jsonCevap(['basarili' => true, 'mesaj' => $mesaj, 'uyari' => (bool) $hatalar]);
+
+            case 'yukle-sunucu':
+                // Sunucudaki (proje klasörü içindeki) bir dosyayı depoya alır; exe gibi sunucuda üretilen dosyalar için
+                if (empty($yetki['can_add'])) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Yükleme yetkiniz yok.'], 403);
+                }
+                $paket = kirp($_POST['paket'] ?? null, 100);
+                if ($paket === null || !preg_match('/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$/', $paket)) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Geçerli bir paket adı girin (harf/rakam ile başlamalı).'], 422);
+                }
+                $aciklama   = kirp($_POST['aciklama'] ?? null, 500);
+                $girilenYol = trim((string) ($_POST['sunucuYolu'] ?? ''));
+                if ($girilenYol === '') {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Sunucu dosya yolu girin.'], 422);
+                }
+                // Keyfi sunucu dosyası okunmasın: yalnız proje kökü altındaki gerçek dosyalar
+                $kok  = realpath(__DIR__ . '/../../');
+                // Göreli yol proje kökünden çözülür (mutlak değilse)
+                $aday = preg_match('#^([A-Za-z]:[\\\\/]|[\\\\/])#', $girilenYol)
+                    ? $girilenYol
+                    : $kok . DIRECTORY_SEPARATOR . $girilenYol;
+                $gercek = realpath($aday);
+                if ($gercek === false || !is_file($gercek)) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Dosya bulunamadı: ' . $girilenYol], 404);
+                }
+                if ($kok === false || strncmp($gercek, $kok . DIRECTORY_SEPARATOR, strlen($kok) + 1) !== 0) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Yalnız proje klasörü içindeki dosyalar yüklenebilir.'], 403);
+                }
+                $ad = kirp(basename($gercek), 200);
+                if ($ad === null || !preg_match('/^[^\\\\\/:*?"<>|\x00-\x1f]+$/', $ad)) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Geçersiz dosya adı.'], 422);
+                }
+                $boyut     = (int) filesize($gercek);
+                $azamiBayt = max(1, (int) ayar('dosya_azami_mb', 50)) * 1024 * 1024;
+                if ($boyut > $azamiBayt) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Boyut sınırı aşıldı (en çok ' . round($azamiBayt / 1048576) . ' MB).'], 422);
+                }
+                if (!is_dir(DEPO_KLASOR) && !@mkdir(DEPO_KLASOR, 0700, true)) {
+                    throw new RuntimeException('Depo klasörü oluşturulamadı.');
+                }
+                $sha   = hash_file('sha256', $gercek);
+                $hedef = DEPO_KLASOR . $sha;
+                if (!is_file($hedef) && !copy($gercek, $hedef)) {
+                    jsonCevap(['basarili' => false, 'mesaj' => 'Dosya depoya kopyalanamadı.'], 500);
+                }
+                $mevcut = $udb->tek(
+                    'SELECT UzakDosyalar_id FROM dbo.UzakDosyalar WHERE UzakDosyalar_Paket = ? AND UzakDosyalar_Ad = ? AND Durum = 1',
+                    [$paket, $ad]
+                );
+                if ($mevcut) {
+                    $udb->calistir(
+                        'UPDATE dbo.UzakDosyalar SET UzakDosyalar_Sha256 = ?, UzakDosyalar_Boyut = ?, UzakDosyalar_Aciklama = ?,
+                                GuncelleyenKullanici = ?, GuncellemeTarihi = GETDATE()
+                         WHERE UzakDosyalar_id = ?',
+                        [$sha, $boyut, $aciklama, $user['kullanici_id'], $mevcut['UzakDosyalar_id']]
+                    );
+                } else {
+                    $udb->calistir(
+                        'INSERT INTO dbo.UzakDosyalar (UzakDosyalar_Paket, UzakDosyalar_Ad, UzakDosyalar_Sha256, UzakDosyalar_Boyut,
+                                UzakDosyalar_Aciklama, OlusturanKullanici)
+                         VALUES (?, ?, ?, ?, ?, ?)',
+                        [$paket, $ad, $sha, $boyut, $aciklama, $user['kullanici_id']]
+                    );
+                }
+                depoTemizle($udb);
+                logYaz('dosya_yukle_sunucu', ['paket' => $paket, 'ad' => $ad, 'yol' => $gercek]);
+                jsonCevap(['basarili' => true, 'mesaj' => "'$ad' dosyası '$paket' paketine yüklendi."]);
 
             case 'sil':
                 if (empty($yetki['can_delete'])) {
@@ -368,8 +435,14 @@ $uyE = fn($m) => htmlspecialchars((string) ($m ?? ''), ENT_QUOTES, 'UTF-8');
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="yukleDosyalar">Dosyalar</label>
-                        <input type="file" class="form-control" id="yukleDosyalar" name="dosyalar[]" multiple required>
+                        <input type="file" class="form-control" id="yukleDosyalar" name="dosyalar[]" multiple>
                         <div class="form-text">Dosya başına en çok <?= $azamiMb ?> MB (sunucu PHP sınırı daha düşükse o geçerli).</div>
+                    </div>
+                    <div class="text-center text-muted small mb-3">— veya —</div>
+                    <div class="mb-3">
+                        <label class="form-label" for="yukleSunucuYolu">Sunucu dosya yolu</label>
+                        <input type="text" class="form-control font-monospace" id="yukleSunucuYolu" name="sunucuYolu" maxlength="500" placeholder="Ör. ajan\arac\UzakEkran.exe">
+                        <div class="form-text">Sunucuda zaten duran bir dosyayı seçmeden yükler. Yalnız proje klasörü içindeki dosyalara izin verilir; göreli yol proje kökünden çözülür.</div>
                     </div>
                     <div class="mb-0">
                         <label class="form-label" for="yukleAciklama">Açıklama</label>

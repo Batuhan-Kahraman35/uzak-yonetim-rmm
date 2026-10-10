@@ -12,10 +12,11 @@
       - YenidenBaslatSaat sonra 0 koduyla cikar; baslatici hemen yeniden baslatir (bellek temizligi)
       - Nabiz yanitindaki komutlar sirayla calistirilir (0.2.0): her komut ayri powershell surecinde,
         zaman asimi dolunca surec agaci sonlandirilir; sonuc komut-sonuc.php'ye gonderilir.
+      - Script'ler Get-UzakEkranGoruntusu ile oturumdaki kullanicinin ekranini komuta ekleyebilir (0.3.0).
     Dosya ASCII tutulur: Windows PowerShell 5.1 BOM'suz dosyayi ANSI okur.
 #>
 
-$AjanSurum          = '0.2.3'
+$AjanSurum          = '0.3.0'
 $YenidenBaslatSaat  = 12
 $HataBeklemeSn      = 900
 
@@ -257,8 +258,9 @@ function Get-Donanim([int]$DiskAdimGb) {
 # Her komut bu calistirici ile ayri surecte kosar. Script'ler param() ile parametre alir ve
 # asagidaki yardimcilari kullanabilir. Ajan kimligi ortam degiskeninden gelir (diske yazilmaz).
 $script:Calistirici = @'
-param([string]$ScriptYol, [string]$ParamYol)
+param([string]$ScriptYol, [string]$ParamYol, [int]$HedefId)
 $ErrorActionPreference = 'Stop'
+$script:UzakHedefId = $HedefId
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $OutputEncoding = [Text.Encoding]::UTF8
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -309,6 +311,100 @@ function Get-UzakPaket {
     } finally {
         $sha.Dispose()
     }
+}
+
+# Oturum acmis kullanicinin ekranini JPEG olarak yakalar ve bu komuta ekler (panelde komut sonucunda gorunur).
+# SYSTEM'in ekrani yoktur: yakalama, depodan inen UzakEkran.exe ile kullanicinin oturumunda tek seferlik
+# zamanlanmis gorevle yapilir. Ekran kilitliyse ya da oturum yoksa hata verir.
+# Ornek: Get-UzakEkranGoruntusu
+#        Get-UzakEkranGoruntusu -Kullanici 'DOMAIN\ali' -Kalite 50
+function Get-UzakEkranGoruntusu {
+    param(
+        [string]$Kullanici,
+        [ValidateRange(10, 95)][int]$Kalite = 60,
+        [ValidateRange(0, 10000)][int]$AzamiGenislik = 2560,
+        [ValidateRange(5, 300)][int]$BeklemeSn = 30
+    )
+    if ($script:UzakHedefId -lt 1) { throw 'Komut kimligi yok; ajan 0.3.0 calistiricisi gerekli.' }
+
+    if (-not $Kullanici) {
+        # Konsol oturumundaki explorer sahibi; konsolda kimse yoksa (yalniz RDP) ilk explorer
+        if (-not ('UzakEkran.Wts' -as [type])) {
+            Add-Type -Namespace UzakEkran -Name Wts -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();'
+        }
+        $konsol = [UzakEkran.Wts]::WTSGetActiveConsoleSessionId()
+        $exp = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'") |
+            Sort-Object { if ($_.SessionId -eq $konsol) { 0 } else { 1 } } | Select-Object -First 1
+        if (-not $exp) { throw 'Oturum acmis kullanici yok (explorer.exe calismiyor).' }
+        $sahip = Invoke-CimMethod -InputObject $exp -MethodName GetOwner
+        if (-not $sahip.User) { throw 'Oturum sahibi okunamadi.' }
+        $Kullanici = "$($sahip.Domain)\$($sahip.User)"
+    }
+
+    # Yakalayici exe depodan alinir (SHA256 dogrulamali; degismediyse tekrar inmez)
+    $aracKlasor = Join-Path $env:UZAK_KOK 'arac'
+    Get-UzakPaket -Paket 'UzakEkran' -Hedef $aracKlasor | Out-Null
+    $kaynakExe = Join-Path $aracKlasor 'UzakEkran.exe'
+    if (-not (Test-Path -LiteralPath $kaynakExe)) { throw 'UzakEkran.exe depodan alinamadi.' }
+
+    $ad     = 'UzakEkran_' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+    $klasor = Join-Path $env:ProgramData "UzakYonetimEkran\$ad"
+    $bayt   = $null
+    try {
+        New-Item -ItemType Directory -Path $klasor -Force | Out-Null
+        # Miras kapatilir: SYSTEM + Administrators tam; hedef kullanici degistirme (exe'yi calistirir, jpg yazar).
+        # Ajan klasoru yalniz SYSTEM/Admin oldugu icin exe buraya kopyalanir, kullanici oradan calistirir.
+        & icacls.exe $klasor /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "${Kullanici}:(OI)(CI)M" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Klasor yetkisi verilemedi: $Kullanici" }
+        Copy-Item -LiteralPath $kaynakExe -Destination (Join-Path $klasor 'UzakEkran.exe') -Force
+
+        $exe = Join-Path $klasor 'UzakEkran.exe'
+        $jpg = Join-Path $klasor 'ekran.jpg'
+        $arg = "`"$jpg`" $Kalite $AzamiGenislik"
+        # conhost --headless (Win10 1809+) konsol penceresi hic acmaz; eski surumlerde pencere bir an gorunebilir
+        $eylem = if ([Environment]::OSVersion.Version.Build -ge 17763) {
+            New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\conhost.exe') -Argument "--headless `"$exe`" $arg"
+        } else {
+            New-ScheduledTaskAction -Execute $exe -Argument $arg
+        }
+        $kim   = New-ScheduledTaskPrincipal -UserId $Kullanici -LogonType Interactive -RunLevel Limited
+        $gayar = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        Register-ScheduledTask -TaskName $ad -TaskPath '\' -Action $eylem -Principal $kim -Settings $gayar -Force | Out-Null
+        Start-ScheduledTask -TaskName $ad -TaskPath '\'
+
+        $hata = "$jpg.hata.txt"
+        $son  = (Get-Date).AddSeconds($BeklemeSn)
+        while (-not (Test-Path -LiteralPath $jpg) -and -not (Test-Path -LiteralPath $hata) -and (Get-Date) -lt $son) {
+            Start-Sleep -Milliseconds 500
+        }
+        if (Test-Path -LiteralPath $hata) {
+            throw "Ekran yakalanamadi ($Kullanici): $([IO.File]::ReadAllText($hata).Trim()) Ekran kilitli olabilir."
+        }
+        if (-not (Test-Path -LiteralPath $jpg)) { throw "Ekran goruntusu $BeklemeSn sn icinde alinamadi ($Kullanici)." }
+        $bayt = [IO.File]::ReadAllBytes($jpg)
+    } finally {
+        Stop-ScheduledTask -TaskName $ad -TaskPath '\' -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $ad -TaskPath '\' -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $klasor -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Govde elle kurulur: buyuk base64 metninde ConvertTo-Json (PS 5.1) yavas
+    $govde = '{"hedefId":' + [int]$script:UzakHedefId + ',"jpeg":"' + [Convert]::ToBase64String($bayt) + '","oturum":' + (ConvertTo-Json -InputObject $Kullanici -Compress) + '}'
+    $wc = New-UzakIstemci
+    $wc.Headers['Content-Type'] = 'application/json; charset=utf-8'
+    try {
+        $cevap = [Text.Encoding]::UTF8.GetString(
+            $wc.UploadData("$env:UZAK_SUNUCU/api/ajan/ekran-goruntusu.php", 'POST', [Text.Encoding]::UTF8.GetBytes($govde))) | ConvertFrom-Json
+    } catch {
+        $e = $_.Exception
+        while ($e.InnerException -and -not ($e -is [Net.WebException])) { $e = $e.InnerException }
+        $m = $e.Message
+        if ($e -is [Net.WebException] -and $e.Response) {
+            try { $m = (New-Object IO.StreamReader($e.Response.GetResponseStream())).ReadToEnd() } catch {}
+        }
+        throw "Ekran goruntusu yuklenemedi: $m"
+    }
+    Write-Output ("Ekran goruntusu: {0} ({1}, {2} KB)" -f $cevap.dosya, $Kullanici, [Math]::Round($bayt.Length / 1KB))
 }
 
 $sb = [scriptblock]::Create([IO.File]::ReadAllText($ScriptYol, [Text.Encoding]::UTF8))
@@ -363,7 +459,7 @@ function Invoke-Komut($Komut) {
         $s = Start-Process -FilePath $Ps -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err `
             -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$cal`"",
-                          '-ScriptYol', "`"$scr`"", '-ParamYol', "`"$par`""
+                          '-ScriptYol', "`"$scr`"", '-ParamYol', "`"$par`"", '-HedefId', $id
         $null = $s.Handle   # PS 5.1: tutamac alinmazsa ExitCode bos doner
         if ($s.WaitForExit($sure * 1000)) {
             $s.WaitForExit()
@@ -405,6 +501,7 @@ try {
     $env:UZAK_SUNUCU = $script:Sunucu
     $env:UZAK_GUID   = $kimlik.guid
     $env:UZAK_TOKEN  = $token
+    $env:UZAK_KOK    = $Kok   # Get-UzakEkranGoruntusu yakalayici exe'yi buradaki arac\ klasorunde arar
 } catch {
     Log "Ayar/kimlik okunamadi: $($_.Exception.Message)"
     exit 2

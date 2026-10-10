@@ -45,7 +45,7 @@ $(function () {
             {
                 data: null, className: 'text-end text-nowrap',
                 render: (d, t, r) => {
-                    let h = '';
+                    let h = '<button type="button" class="btn btn-outline-secondary btn-sm me-1 script-sonuc" data-id="' + r.Scriptler_id + '" title="Sonuçlar / çıktılar"><i class="bi bi-clock-history"></i></button>';
                     if (yetki.gonder) h += '<button type="button" class="btn btn-outline-warning btn-sm me-1 script-gonder" data-id="' + r.Scriptler_id + '" title="Cihaz / gruba gönder"><i class="bi bi-send"></i></button>';
                     if (yetki.duzenle) h += '<button type="button" class="btn btn-outline-primary btn-sm me-1 script-duzenle" data-id="' + r.Scriptler_id + '" title="Düzenle"><i class="bi bi-pencil"></i></button>';
                     if (yetki.sil) h += '<button type="button" class="btn btn-outline-danger btn-sm script-sil" data-id="' + r.Scriptler_id + '" title="Sil"><i class="bi bi-trash"></i></button>';
@@ -192,5 +192,106 @@ $(function () {
                 if (c.basarili) { bootstrap.Modal.getInstance($gModal[0]).hide(); loadStats(); }
             }).always(() => $btn.prop('disabled', false));
         });
+    });
+
+    // Sonuçlar: script'in tüm cihazlardaki gönderimleri (server-side; geçmiş sınırsız büyür)
+    const $sModal  = $('#sonucModal');
+    const $scModal = $('#sonucCiktiModal');
+    let sonucTablo = null;
+    let sonucScriptId = 0;
+
+    $tablo.on('click', '.script-sonuc', function () {
+        const r = tablo.row($(this).closest('tr')).data();
+        sonucScriptId = r.Scriptler_id;
+        $('#sonucModalBaslik span').text(r.Scriptler_Ad);
+        $('#sonucDurum').val('').trigger('change.select2');
+        bootstrap.Modal.getOrCreateInstance($sModal[0]).show();
+    });
+
+    // Modal görünür olunca kurulur (scrollX genişliği doğru hesaplansın); sonraki açılışlarda yenilenir
+    $sModal.on('shown.bs.modal', function () {
+        if (!sonucTablo) {
+            sonucTablo = $('#sonucTablo').DataTable({
+                language: { url: '//cdn.datatables.net/plug-ins/1.13.7/i18n/tr.json' },
+                processing: true, serverSide: true, scrollX: true, dom: 'lrtip', pageLength: 25,
+                order: [[4, 'desc']], // Gönderim tarihi: en yeni üstte
+                columnDefs: [{ targets: 6, orderable: false }],
+                ajax: {
+                    url: adres, type: 'POST',
+                    data: function (d) {
+                        d.action = 'sonuclar';
+                        d.scriptId = sonucScriptId;
+                        d.durum = $('#sonucDurum').val();
+                        d.gonderimBas = $('#sonucGonderimBas').val();
+                        d.gonderimBit = $('#sonucGonderimBit').val();
+                        d.bitisBas = $('#sonucBitisBas').val();
+                        d.bitisBit = $('#sonucBitisBit').val();
+                    }
+                },
+                columns: [
+                    {
+                        data: 'Cihazlar_BilgisayarAdi',
+                        render: (d, t, r) => '<a href="/admin/uzak-cihaz-detay?id=' + encodeURIComponent(r.CihazId)
+                            + '" target="_blank" rel="noopener">' + uzakKacis(d) + ' <i class="bi bi-box-arrow-up-right small"></i></a>'
+                    },
+                    { data: 'DurumAd', render: (d, t, r) => '<span class="badge text-bg-' + uzakKacis(r.DurumRenk || 'secondary') + '">' + uzakKacis(d) + '</span>' },
+                    { data: 'KomutHedefleri_CikisKodu', className: 'text-center', render: d => d === null ? uzakBos : uzakKacis(d) },
+                    { data: 'Gonderen', render: d => d ? uzakKacis(d) : uzakBos },
+                    { data: 'Olusturma', render: d => uzakKacis(d) },
+                    { data: 'Bitis', render: d => d ? uzakKacis(d) : uzakBos },
+                    {
+                        data: null, className: 'text-end',
+                        render: (d, t, r) => r.CiktiVar == 1
+                            ? '<button type="button" class="btn btn-outline-secondary btn-sm sonuc-cikti" data-id="' + r.KomutHedefleri_id + '" title="Çıktı / ekran"><i class="bi bi-terminal"></i></button>'
+                            : uzakBos
+                    }
+                ]
+            });
+        } else {
+            sonucTablo.ajax.reload();
+        }
+        sonucTablo.columns.adjust();
+    });
+
+    // Filtreler değişince otomatik uygula (ayrı buton gerekmez)
+    $('#sonucDurum').on('change', () => { if (sonucTablo) sonucTablo.ajax.reload(); });
+    $('#sonucGonderimBas, #sonucGonderimBit, #sonucBitisBas, #sonucBitisBit').on('change', () => { if (sonucTablo) sonucTablo.ajax.reload(); });
+    $('#sonucFiltreTemizle').on('click', function () {
+        $('#sonucGonderimBas, #sonucGonderimBit, #sonucBitisBas, #sonucBitisBit').val('');
+        $('#sonucDurum').val('').trigger('change.select2');
+        if (sonucTablo) sonucTablo.ajax.reload();
+    });
+
+    // Çıktı / ekran görüntüsü
+    $('#sonucTablo').on('click', '.sonuc-cikti', function () {
+        const hedefId = $(this).data('id');
+        $.post(adres, { action: 'sonuc_cikti', hedefId: hedefId }, function (c) {
+            if (!c.basarili) { showToast(c.mesaj, 'error'); return; }
+            const v = c.veri;
+            $('#sonucCiktiBaslik span').text(v.Cihazlar_BilgisayarAdi + ' — ' + v.DurumAd
+                + (v.KomutHedefleri_CikisKodu !== null ? ' (çıkış ' + v.KomutHedefleri_CikisKodu + ')' : ''));
+            $('#sonucCiktiZaman').text(['Alındı: ' + (v.Alinma || '-'), 'Başladı: ' + (v.Baslama || '-'), 'Bitti: ' + (v.Bitis || '-')].join('  ·  '));
+            $('#sonucCiktiMetin').text(v.KomutHedefleri_Cikti || '(çıktı yok)');
+            $('#sonucCiktiHata').text(v.KomutHedefleri_Hata || '');
+            $('#sonucCiktiHataAlan').toggle(!!v.KomutHedefleri_Hata);
+
+            const $e = $('#sonucEkranlar').empty();
+            const ekranlar = c.ekranlar || [];
+            ekranlar.forEach(function (dosya) {
+                const url = adres + '?action=ekran_goster&hedefId=' + encodeURIComponent(hedefId) + '&dosya=' + encodeURIComponent(dosya);
+                $('<a>', { href: url, target: '_blank', rel: 'noopener', title: dosya })
+                    .append($('<img>', { src: url, class: 'img-thumbnail', css: { maxHeight: '140px', cursor: 'zoom-in' } }))
+                    .appendTo($e);
+            });
+            $('#sonucEkranAlan').toggleClass('d-none', ekranlar.length === 0);
+
+            bootstrap.Modal.getOrCreateInstance($scModal[0]).show();
+        });
+    });
+
+    // Çıktı / hata kopyala
+    $scModal.on('click', '.sonuc-kopya', function () {
+        const metin = $($(this).data('hedef')).text();
+        navigator.clipboard.writeText(metin).then(() => showToast('Kopyalandı', 'success'), () => showToast('Kopyalanamadı', 'error'));
     });
 });
