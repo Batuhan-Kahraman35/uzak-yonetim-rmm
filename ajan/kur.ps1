@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
     Uzak Yonetim - ajan kurulum betigi
     Sunucudan indirilip calistirilir (api/ajan/kur.php). Yonetici olarak calismalidir.
@@ -23,7 +23,9 @@ param(
     [string]$KayitKoduDosya,
     [string]$Sunucu = '__UZAK_YONETIM_SUNUCU__',   # kur.php indirme adresiyle doldurur
     [switch]$Kaldir,
-    [switch]$IlkKurulum                            # kurulumdan sonra ilk kurulum script'lerini kuyruga alir
+    [switch]$IlkKurulum,                           # kurulumdan sonra ilk kurulum script'lerini kuyruga alir
+    [string]$Aciklama,                             # yeni kayitta cihazin Aciklama alanina yazilir
+    [switch]$AciklamaSor                           # yeni kayitta aciklamayi konsoldan sorar (.cmd kurulumu)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +65,30 @@ function Invoke-Api([string]$Yol, $Govde, [hashtable]$Basliklar = @{}) {
         $mesaj = $_.ErrorDetails.Message
         if (-not $mesaj) { $mesaj = $_.Exception.Message }
         return @{ Kod = $kod; Hata = $mesaj }
+    }
+}
+
+# Sureli satir okuma: sure dolarsa / konsol yoksa (gozetimsiz kurulum) bos doner
+function Read-Zamanli([string]$Soru, [int]$Saniye = 60) {
+    try {
+        [Console]::Write($Soru)
+        $metin = New-Object Text.StringBuilder
+        $bitis = (Get-Date).AddSeconds($Saniye)
+        while ((Get-Date) -lt $bitis) {
+            if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 100; continue }
+            $tus = [Console]::ReadKey($true)
+            if ($tus.Key -eq 'Enter') { break }
+            if ($tus.Key -eq 'Backspace') {
+                if ($metin.Length -gt 0) { [void]$metin.Remove($metin.Length - 1, 1); [Console]::Write("`b `b") }
+                continue
+            }
+            if (-not [char]::IsControl($tus.KeyChar)) { [void]$metin.Append($tus.KeyChar); [Console]::Write($tus.KeyChar) }
+            $bitis = (Get-Date).AddSeconds($Saniye)   # yazarken sure tazelenir
+        }
+        [Console]::WriteLine()
+        return $metin.ToString().Trim()
+    } catch {
+        return ''
     }
 }
 
@@ -146,11 +172,15 @@ try {
     # --- Kayit ----------------------------------------------------------------
     if (-not $basliklar) {
         if (-not $KayitKodu) { throw 'Kayit kodu verilmedi (-KayitKodu veya -KayitKoduDosya).' }
+        if ($AciklamaSor -and -not $Aciklama) {
+            $Aciklama = Read-Zamanli ' Cihaz aciklamasi (or. Muhasebe - Ayse Hanim, bos birakilabilir): ' 60
+        }
         $c = Invoke-Api 'kayit.php' @{
             kayitKodu     = $KayitKodu
             bilgisayarAdi = $env:COMPUTERNAME
             anakartUuid   = $donanim.uuid
             biosSeri      = $donanim.seri
+            aciklama      = $Aciklama
         }
         if ($c.Kod -ne 200 -or -not $c.Veri.basarili) { throw "Kayit basarisiz (HTTP $($c.Kod)): $($c.Hata)" }
 

@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Uzak Yönetim - Kayıt Kodları
  * Ajan kurulumunda kullanılan, süreli ve kullanım limitli kodlar.
@@ -94,7 +94,8 @@ function kurulumDosyasi(string $kod): string
         '    echo  KURULUM BASARISIZ - kurulum betigi indirilemedi ^(ag / sunucu^)',
         '    goto son',
         ')',
-        'powershell -NoProfile -ExecutionPolicy Bypass -File "%UYPS%" -KayitKodu "' . $kod . '" %IKFLAG%',
+        ':: Aciklama sorusunu PowerShell sorar (cmd kod sayfasi Turkce karakteri bozar); yalniz yeni kayitta',
+        'powershell -NoProfile -ExecutionPolicy Bypass -File "%UYPS%" -KayitKodu "' . $kod . '" -AciklamaSor %IKFLAG%',
         'set "SONUC=%errorlevel%"',
         'del /f /q "%UYPS%" >nul 2>&1',
         'echo.',

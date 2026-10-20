@@ -2,7 +2,8 @@
 /**
  * Ajan kaydı: kayıt kodu → cihaz GUID + token
  *
- * Girdi: { kayitKodu, bilgisayarAdi, anakartUuid, biosSeri }
+ * Girdi: { kayitKodu, bilgisayarAdi, anakartUuid, biosSeri, aciklama? }
+ * aciklama doluysa Cihazlar_Aciklama'ya yazılır; boşsa yeniden kurulumda mevcut açıklama korunur.
  * Aynı donanım (anakart UUID + BIOS seri) daha önce kayıtlıysa o kayıt kullanılır, token yenilenir.
  * Klon imajlarda Windows MachineGuid aynı olabildiği için kimlik donanımdan üretilir.
  */
@@ -14,6 +15,7 @@ $girdi = ajanGirdi();
 
 $kod = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) ($girdi['kayitKodu'] ?? '')));
 $bilgisayarAdi = kirp($girdi['bilgisayarAdi'] ?? null, 100);
+$aciklama = kirp($girdi['aciklama'] ?? null, 500);
 
 if ($kod === '' || $bilgisayarAdi === null) {
     logYaz('ajan_kayit_basarisiz', ['neden' => 'eksik alan'], null);
@@ -27,7 +29,7 @@ $donanimKimlik = donanimKimlikHesapla($girdi['anakartUuid'] ?? '', $girdi['biosS
 $token = bin2hex(random_bytes(32));
 
 try {
-    $sonuc = $db->islem(function (UzakDb $db) use ($kod, $bilgisayarAdi, $donanimKimlik, $token) {
+    $sonuc = $db->islem(function (UzakDb $db) use ($kod, $bilgisayarAdi, $aciklama, $donanimKimlik, $token) {
         // Kod kontrolü + kullanım sayısını artırma tek atomik UPDATE
         $kayitKodu = $db->tek(
             'UPDATE dbo.KayitKodlari
@@ -55,20 +57,21 @@ try {
             $db->calistir(
                 'UPDATE dbo.Cihazlar
                  SET Cihazlar_TokenHash = ?, Cihazlar_BilgisayarAdi = ?,
+                     Cihazlar_Aciklama = COALESCE(?, Cihazlar_Aciklama),
                      Cihazlar_YazilimHash = NULL, Cihazlar_DonanimHash = NULL,
                      Durum = 1, GuncellemeTarihi = GETDATE()
                  WHERE Cihazlar_id = ?',
-                [tokenOzet($token), $bilgisayarAdi, $mevcut['Cihazlar_id']]
+                [tokenOzet($token), $bilgisayarAdi, $aciklama, $mevcut['Cihazlar_id']]
             );
             return ['id' => (int) $mevcut['Cihazlar_id'], 'guid' => strtolower($mevcut['Guid']), 'yeni' => false, 'kodId' => (int) $kayitKodu['KayitKodlari_id']];
         }
 
         $yeni = $db->tek(
             'INSERT INTO dbo.Cihazlar
-                (Cihazlar_Guid, Cihazlar_TokenHash, Cihazlar_DonanimKimlik, Cihazlar_CihazGruplari_id, Cihazlar_BilgisayarAdi)
+                (Cihazlar_Guid, Cihazlar_TokenHash, Cihazlar_DonanimKimlik, Cihazlar_CihazGruplari_id, Cihazlar_BilgisayarAdi, Cihazlar_Aciklama)
              OUTPUT inserted.Cihazlar_id, CONVERT(VARCHAR(36), inserted.Cihazlar_Guid) AS Guid
-             VALUES (NEWID(), ?, ?, ?, ?)',
-            [tokenOzet($token), $donanimKimlik, $kayitKodu['KayitKodlari_CihazGruplari_id'], $bilgisayarAdi]
+             VALUES (NEWID(), ?, ?, ?, ?, ?)',
+            [tokenOzet($token), $donanimKimlik, $kayitKodu['KayitKodlari_CihazGruplari_id'], $bilgisayarAdi, $aciklama]
         );
         return ['id' => (int) $yeni['Cihazlar_id'], 'guid' => strtolower($yeni['Guid']), 'yeni' => true, 'kodId' => (int) $kayitKodu['KayitKodlari_id']];
     });
@@ -85,6 +88,7 @@ if ($sonuc === null) {
 logYaz('ajan_kayit', [
     'cihazId'       => $sonuc['id'],
     'bilgisayar'    => $bilgisayarAdi,
+    'aciklama'      => $aciklama,
     'yeniKayit'     => $sonuc['yeni'],
     'kayitKoduId'   => $sonuc['kodId'],
     'donanimKimlik' => $donanimKimlik !== null,
